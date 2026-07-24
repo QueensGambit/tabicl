@@ -33,10 +33,27 @@ class RandomFunction(RandomTensorTransformer):
             'gp': RandomGPFunction,
             'em': RandomEMAssignmentFunction,
             'prod': RandomProductFunction,
+            # ----- Physics-informed additions (manufacturing) -----
+            'arrhenius': RandomArrheniusFunction,
+            'archard': RandomArchardWearFunction,
+            'hollomon': RandomHollomonHardeningFunction,
+            'basquin': RandomBasquinFatigueFunction,
+            'fourier_heat': RandomFourierHeatFunction,
+            'taylor_wear': RandomTaylorToolWearFunction,
+            'newton_cooling': RandomNewtonCoolingFunction,
+            'tol_stackup': RandomToleranceStackupFunction,
+            'preston': RandomPrestonFunction,
         }
         presets_dict = {
             'default': 'mlp,tree,disc,lin,quad,gp,em,prod',
             'tabpfnv2': 'mlp,tree,disc',
+            # New preset: physics formulas only, useful for pure ablations
+            'physics': 'arrhenius,archard,hollomon,basquin,fourier_heat,taylor_wear,newton_cooling,tol_stackup,preston',
+            # New preset: original prior + physics formulas mixed together
+            'mix_physics': (
+                'mlp,tree,disc,lin,quad,gp,em,prod,'
+                'arrhenius,archard,hollomon,basquin,fourier_heat,taylor_wear,newton_cooling,tol_stackup,preston'
+            ),
         }
         fct_types: List[type] = []
         for name in self.config.fct_types.split(','):
@@ -65,6 +82,16 @@ class CheapRandomFunction(RandomFunction):
             RandomDiscretizationFunction,
             RandomLinearFunction,
             RandomQuadraticFunction,
+            # Physics functions are all closed-form / non-recursive, so they are cheap by construction
+            RandomArrheniusFunction,
+            RandomArchardWearFunction,
+            RandomHollomonHardeningFunction,
+            RandomBasquinFatigueFunction,
+            RandomFourierHeatFunction,
+            RandomTaylorToolWearFunction,
+            RandomNewtonCoolingFunction,
+            RandomToleranceStackupFunction,
+            RandomPrestonFunction,
         ]
         fct_type = self.sampler.choice("cheap_random_function_fct_type", fct_types)
         self.fct_ = fct_type(self.context, self.in_features, self.out_features)
@@ -311,3 +338,195 @@ class RandomProductFunction(RandomFunction):
 
     def _transform(self, x: torch.Tensor) -> torch.Tensor:
         return self.fcts_[0](x) * self.fcts_[1](x)
+
+
+# =====================================================================
+# Physics-informed random functions (manufacturing-relevant)
+#
+# Each function picks 1-2 (or a variable number of) input columns, maps
+# them via a sigmoid into a physically plausible positive range (since
+# incoming columns are standardized, roughly N(0, 1)-distributed), and
+# applies a classical manufacturing / materials-science formula with
+# randomized physical constants. The resulting scalar per sample is then
+# broadcast to `out_features` dimensions via a RandomLinearFunction, the
+# same mechanism used by RandomDiscretizationFunction and RandomEMAssignmentFunction
+# above. All of these functions are closed-form (no recursion), so they
+# are safe to use in CheapRandomFunction as well.
+# =====================================================================
+
+def _pick_col_idxs(x: torch.Tensor, k: int) -> torch.Tensor:
+    """Randomly picks k column indices from x (with replacement if in_features < k)."""
+    return torch.randint(0, x.shape[1], (k,), device=x.device)
+
+
+class RandomArrheniusFunction(RandomFunction):
+    """
+    Arrhenius equation: rate = A * exp(-Ea / (R*T)).
+    Relevant for thermally activated processes: curing, diffusion, chemical
+    reaction rates, temperature-driven material fatigue.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.t_idx_ = _pick_col_idxs(x, 1)
+        self.t_offset_ = 300.0  # Kelvin baseline
+        self.t_scale_ = self.sampler.numerical("arrhenius_t_scale", 50.0, 500.0, use_log=True)
+        self.ea_over_r_ = self.sampler.numerical("arrhenius_ea_over_r", 500.0, 15000.0, use_log=True)
+        self.log_a_ = float(np.log(self.sampler.numerical("arrhenius_a", 1e-3, 1e3, use_log=True)))
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        T = self.t_offset_ + self.t_scale_ * torch.sigmoid(x[:, self.t_idx_[0]])
+        log_rate = self.log_a_ - self.ea_over_r_ / T
+        return self.out_proj_(log_rate[:, None])
+
+
+class RandomArchardWearFunction(RandomFunction):
+    """
+    Archard's wear law: W = K * F * d (K encodes hardness).
+    Relevant for tool wear, sliding/friction wear, bearing wear.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.idxs_ = _pick_col_idxs(x, 2)
+        self.f_scale_ = self.sampler.numerical("archard_f_scale", 0.5, 20.0, use_log=True)
+        self.d_scale_ = self.sampler.numerical("archard_d_scale", 0.5, 20.0, use_log=True)
+        self.k_ = self.sampler.numerical("archard_k", 1e-5, 1e-2, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        F = self.f_scale_ * torch.sigmoid(x[:, self.idxs_[0]])
+        d = self.d_scale_ * torch.sigmoid(x[:, self.idxs_[1]])
+        wear = self.k_ * F * d
+        return self.out_proj_(wear[:, None])
+
+
+class RandomHollomonHardeningFunction(RandomFunction):
+    """
+    Hollomon hardening law: sigma = K * epsilon^n.
+    Relevant for forming processes (deep drawing, rolling, forging).
+    """
+    def _fit(self, x: torch.Tensor):
+        self.eps_idx_ = _pick_col_idxs(x, 1)
+        self.eps_scale_ = self.sampler.numerical("hollomon_eps_scale", 0.01, 1.0, use_log=True)
+        self.strength_coef_ = self.sampler.numerical("hollomon_k", 200.0, 2000.0, use_log=True)
+        self.hardening_exp_ = self.sampler.numerical("hollomon_n", 0.05, 0.5, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        eps = self.eps_scale_ * torch.sigmoid(x[:, self.eps_idx_[0]]) + 1e-4
+        sigma = self.strength_coef_ * eps ** self.hardening_exp_
+        return self.out_proj_(sigma[:, None])
+
+
+class RandomBasquinFatigueFunction(RandomFunction):
+    """
+    Basquin equation (S-N curve): sigma_a = sigma_f' * (2N)^b.
+    Relevant for fatigue strength / lifetime prediction.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.n_idx_ = _pick_col_idxs(x, 1)
+        self.n_offset_ = 1e2
+        self.n_scale_ = self.sampler.numerical("basquin_n_scale", 1e2, 1e6, use_log=True)
+        self.fatigue_coef_ = self.sampler.numerical("basquin_sigma_f", 300.0, 1500.0, use_log=True)
+        self.fatigue_exp_ = -self.sampler.numerical("basquin_b", 0.05, 0.15, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        N = self.n_offset_ + self.n_scale_ * torch.sigmoid(x[:, self.n_idx_[0]])
+        sigma_a = self.fatigue_coef_ * (2 * N) ** self.fatigue_exp_
+        return self.out_proj_(sigma_a[:, None])
+
+
+class RandomFourierHeatFunction(RandomFunction):
+    """
+    Fourier's law of heat conduction (steady-state, 1D): q = k*A*(T1-T2)/L.
+    Relevant for thermal processes: welding, heat treatment, casting.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.idxs_ = _pick_col_idxs(x, 2)
+        self.t_offset_ = 20.0
+        self.t1_scale_ = self.sampler.numerical("fourier_t1_scale", 10.0, 300.0, use_log=True)
+        self.t2_scale_ = self.sampler.numerical("fourier_t2_scale", 10.0, 300.0, use_log=True)
+        self.conductivity_ = self.sampler.numerical("fourier_k", 0.1, 400.0, use_log=True)
+        self.area_ = self.sampler.numerical("fourier_area", 1e-4, 1.0, use_log=True)
+        self.length_ = self.sampler.numerical("fourier_length", 1e-3, 1.0, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        T1 = self.t_offset_ + self.t1_scale_ * torch.sigmoid(x[:, self.idxs_[0]])
+        T2 = self.t_offset_ + self.t2_scale_ * torch.sigmoid(x[:, self.idxs_[1]])
+        q = self.conductivity_ * self.area_ * (T1 - T2) / self.length_
+        return self.out_proj_(q[:, None])
+
+
+class RandomTaylorToolWearFunction(RandomFunction):
+    """
+    Taylor's tool life equation: V * T^n = C  =>  T = (C/V)^(1/n).
+    Relevant for tool life in machining/turning/milling.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.v_idx_ = _pick_col_idxs(x, 1)
+        self.v_scale_ = self.sampler.numerical("taylor_v_scale", 10.0, 500.0, use_log=True)
+        self.taylor_c_ = self.sampler.numerical("taylor_c", 50.0, 500.0, use_log=True)
+        self.taylor_n_ = self.sampler.numerical("taylor_n", 0.1, 0.4, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        V = self.v_scale_ * torch.sigmoid(x[:, self.v_idx_[0]]) + 1.0
+        log_T = (np.log(self.taylor_c_) - torch.log(V)) / self.taylor_n_
+        return self.out_proj_(log_T[:, None])
+
+
+class RandomNewtonCoolingFunction(RandomFunction):
+    """
+    Newton's law of cooling: T(t) = T_env + (T0 - T_env) * exp(-k*t).
+    Relevant for cooling processes: casting, heat treatment, weld cooling.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.idxs_ = _pick_col_idxs(x, 2)
+        self.t0_offset_ = 20.0
+        self.t0_scale_ = self.sampler.numerical("newton_t0_scale", 50.0, 300.0, use_log=True)
+        self.time_scale_ = self.sampler.numerical("newton_time_scale", 1.0, 500.0, use_log=True)
+        self.t_env_ = self.sampler.numerical("newton_t_env", 10.0, 30.0, use_log=True)
+        self.k_ = self.sampler.numerical("newton_k", 1e-3, 1.0, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        T0 = self.t0_offset_ + self.t0_scale_ * torch.sigmoid(x[:, self.idxs_[0]])
+        t = self.time_scale_ * torch.sigmoid(x[:, self.idxs_[1]])
+        T = self.t_env_ + (T0 - self.t_env_) * torch.exp(-self.k_ * t)
+        return self.out_proj_(T[:, None])
+
+
+class RandomToleranceStackupFunction(RandomFunction):
+    """
+    Statistical tolerance stack-up (root-sum-square): sigma_total = sqrt(sum(sigma_i^2)).
+    Relevant for dimensional accuracy in multi-stage manufacturing processes.
+    """
+    def _fit(self, x: torch.Tensor):
+        n_dims = self.sampler.randint("tol_stackup_n_dims", 2, min(x.shape[1], 8), use_log=True)
+        self.idxs_ = _pick_col_idxs(x, n_dims)
+        self.sigma_scale_ = self.sampler.numerical("tol_stackup_sigma_scale", 0.01, 1.0, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        sigmas = self.sigma_scale_ * torch.sigmoid(x[:, self.idxs_])
+        total = torch.sqrt((sigmas ** 2).sum(dim=-1) + 1e-12)
+        return self.out_proj_(total[:, None])
+
+
+class RandomPrestonFunction(RandomFunction):
+    """
+    Preston's equation: MRR = Kp * P * V.
+    Relevant for material removal rate in polishing/lapping/CMP.
+    """
+    def _fit(self, x: torch.Tensor):
+        self.idxs_ = _pick_col_idxs(x, 2)
+        self.p_scale_ = self.sampler.numerical("preston_p_scale", 0.5, 10.0, use_log=True)
+        self.v_scale_ = self.sampler.numerical("preston_v_scale", 0.5, 10.0, use_log=True)
+        self.kp_ = self.sampler.numerical("preston_kp", 1e-4, 1e-1, use_log=True)
+        self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
+
+    def _transform(self, x: torch.Tensor) -> torch.Tensor:
+        P = self.p_scale_ * torch.sigmoid(x[:, self.idxs_[0]])
+        V = self.v_scale_ * torch.sigmoid(x[:, self.idxs_[1]])
+        mrr = self.kp_ * P * V
+        return self.out_proj_(mrr[:, None])

@@ -38,6 +38,9 @@ import torch
 import numpy as np
 from torch.utils.data import IterableDataset, DataLoader
 
+import sys, os
+sys.path.append(os.getcwd())
+
 from tabicl.prior._dataset import PriorDataset
 from tabicl.prior.graph_lib._config import PriorConfig
 from tabicl.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP

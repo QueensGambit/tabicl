@@ -93,7 +93,7 @@ python tabicl/train/_run.py \
             --zero_init False \
             --use_flash_attn3 False \
             --norm_type layernorm_nobias \
-            --checkpoint_dir /home/HTW-AALEN/06892/Programming/forks/tabicl/checkpoints/physics_regression/stage_1 \
+            --checkpoint_dir ~/Programming/forks/tabicl/checkpoints/physics_regression/stage_1 \
             --save_temp_every 500 \
             --save_perm_every 5000
 

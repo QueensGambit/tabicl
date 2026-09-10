@@ -502,17 +502,16 @@ class RandomToleranceStackupFunction(RandomFunction):
     Relevant for dimensional accuracy in multi-stage manufacturing processes.
     """
     def _fit(self, x: torch.Tensor):
-        # Falls x nur 1 Spalte hat, können wir maximal 1 Dimension wählen
         max_dims = min(x.shape[1], 8)
         if max_dims <= 2:
-            n_dims = max_dims
+            n_dims = max_dims  # nicht genug Spalten für einen echten Zufallsbereich
         else:
             n_dims = self.sampler.randint("tol_stackup_n_dims", 2, max_dims, use_log=True)
 
         self.idxs_ = _pick_col_idxs(x, n_dims)
         self.sigma_scale_ = self.sampler.numerical("tol_stackup_sigma_scale", 0.01, 1.0, use_log=True)
         self.out_proj_ = RandomLinearFunction(self.context, 1, self.out_features)
-        
+
     def _transform(self, x: torch.Tensor) -> torch.Tensor:
         sigmas = self.sigma_scale_ * torch.sigmoid(x[:, self.idxs_])
         total = torch.sqrt((sigmas ** 2).sum(dim=-1) + 1e-12)

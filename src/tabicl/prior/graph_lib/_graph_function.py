@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import torch
 
@@ -10,15 +10,27 @@ class RandomGraphFunction(RandomTransformer):
     """
     Samples a dataset by propagating data through a graph.
     """
-    def __init__(self, context: Context, dag: List[List[int]], node_feature_specs: List[Dict[str, FeatureSpec]]):
+    def __init__(self, context: Context, dag: List[List[int]], node_feature_specs: List[Dict[str, FeatureSpec]],
+                 force_physics_nodes: Optional[List[bool]] = None):
+        """
+        :param context: Context.
+        :param dag: Graph (list of parent node idxs for each node).
+        :param node_feature_specs: feature specs with feature names for each node.
+        :param force_physics_nodes: Optional per-node boolean list. If a node's entry is True, that node's
+            random function is biased towards using a physics-informed formula (see RandomNodeFunction /
+            RandomFunction's force_physics). Has no effect on nodes that produce a y feature, which are
+            always kept physics-free regardless of this flag (see RandomNodeFunction). Defaults to all-False,
+            i.e. unchanged behavior from before this parameter existed.
+        """
         super().__init__(context=context)
         self.dag = dag
         self.node_feature_specs = node_feature_specs
+        self.force_physics_nodes = force_physics_nodes if force_physics_nodes is not None else [False] * len(dag)
 
     def _fit(self, n_samples: int):
         self.nodes_ = [
-            RandomNodeFunction(self.context, feature_specs=feature_specs)
-            for feature_specs in self.node_feature_specs
+            RandomNodeFunction(self.context, feature_specs=feature_specs, force_physics=self.force_physics_nodes[node_idx])
+            for node_idx, feature_specs in enumerate(self.node_feature_specs)
         ]
         # for efficiency, prune nodes whose values don't need to be computed
         self.should_compute_ = [False for _ in range(len(self.nodes_))]

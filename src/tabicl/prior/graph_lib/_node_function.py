@@ -13,16 +13,28 @@ class RandomNodeFunction(RandomTransformer):
     """
     Computes the node matrix from the parents' matrices, and optionally extracts columns for the dataset.
     """
-    def __init__(self, context: Context, feature_specs: Dict[str, FeatureSpec]):
+    def __init__(self, context: Context, feature_specs: Dict[str, FeatureSpec], force_physics: bool = False):
         super().__init__(context)
         self.feature_specs = feature_specs
+        self.force_physics = force_physics
 
     def _fit(self, x: List[torch.Tensor], n_samples: int):
+        # If this node produces at least one y feature, disable physics-informed function types for the
+        # underlying random function. Those functions currently broadcast a single physical scalar to
+        # out_features via a rank-1 linear map, which would make y a trivial rescaling of one number
+        # rather than a genuinely learnable function -- see the rank-collapse discussion. This does not
+        # distinguish between a node that produces ONLY y features vs. a node that produces both x and y
+        # features (which can happen, since x and y features can share a node): in the latter case physics
+        # is disabled for the whole node's random_func_, since all of its output columns come from the same
+        # underlying random function call and cannot be selectively restricted per output column. The
+        # per-feature CategoricalConverter below is finer-grained and does not rely on this node-level flag.
+        is_target_node = any(feature_spec.group == 'y' for feature_spec in self.feature_specs.values())
+
         self.converters_ = dict()
         for feature_name, feature_spec in self.feature_specs.items():
             cat_size = feature_spec.cat_size
             converter = (
-                CategoricalConverter(self.context, n_values=cat_size)
+                CategoricalConverter(self.context, n_values=cat_size, physics_allowed=feature_spec.group != 'y')
                 if cat_size > 0
                 else NumericalConverter(self.context,
                                         disallow_warping=self.config.disallow_y_warping and feature_spec.group == 'y')
@@ -33,7 +45,11 @@ class RandomNodeFunction(RandomTransformer):
         if len(self.converters_) > 0:
             self.n_features_ += sum(converter.get_n_features() for converter in self.converters_.values())
         self.random_points_ = RandomPoints(self.context)
-        self.random_func_ = RandomMultiFunction(self.context, out_features=self.n_features_)
+        self.random_func_ = RandomMultiFunction(
+            self.context, out_features=self.n_features_,
+            physics_allowed=not is_target_node,
+            force_physics=self.force_physics and not is_target_node,
+        )
 
         self.std_ = Standardize(self.context)
         self.l2_norm_ = L2Normalize(self.context)

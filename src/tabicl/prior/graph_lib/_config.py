@@ -39,6 +39,10 @@ class PriorConfig:
     remove_trivial_datasets: bool = False
     trivial_dataset_threshold: float = 0.05
     use_corrected_cat_meta_sampling: bool = False
+    # Probability of forcing one y-ancestor node in the graph to use a physics-informed function
+    # (see RandomDataset.sample / _dataset.py). 0.0 = today's unbiased behavior (physics nodes only
+    # end up on the y-ancestor path by chance).
+    physics_ancestor_boost_prob: float = 0.0
 
     @staticmethod
     def from_args(args) -> "PriorConfig":
@@ -67,7 +71,8 @@ class PriorConfig:
                            ensure_iid=args.ensure_iid,
                            remove_trivial_datasets=args.remove_trivial_datasets,
                            trivial_dataset_threshold=args.trivial_dataset_threshold,
-                           use_corrected_cat_meta_sampling=args.use_corrected_cat_meta_sampling)
+                           use_corrected_cat_meta_sampling=args.use_corrected_cat_meta_sampling,
+                           physics_ancestor_boost_prob=args.physics_ancestor_boost_prob)
 
     @staticmethod
     def add_args_to_parser(parser: argparse.ArgumentParser):
@@ -229,5 +234,14 @@ class PriorConfig:
             default=False,
             type=str2bool,
             help="Whether to use the corrected meta-sampling for categoricals.",
+        )
+        parser.add_argument(
+            "--physics_ancestor_boost_prob",
+            default=0.0,
+            type=float,
+            help="Probability of forcing one ancestor node of y in the graph to use a physics-informed "
+                 "function (only applies to graph_scm prior with physics function types enabled via "
+                 "--fct_types). 0.0 (default) reproduces the unbiased behavior where physics functions "
+                 "only end up on the causal path to y by chance.",
         )
 

@@ -111,9 +111,10 @@ class CategoricalSoftmaxDiscretizer(Converter):
 
 
 class CategoricalConverter(Converter):
-    def __init__(self, context: Context, n_values: int):
+    def __init__(self, context: Context, n_values: int, physics_allowed: bool = True):
         super().__init__(context)
         self.n_values = n_values
+        self.physics_allowed = physics_allowed
 
         all_cat_modes = ["neighbor_id", "neighbor_disc", "neighbor_func", "neighbor_int", "softmax_id", "softmax_disc",
                          "softmax_int"]
@@ -147,7 +148,7 @@ class CategoricalConverter(Converter):
                 else self.sampler.randint("cat_n_features", 1, n_values, use_log=True, mode="local")
             )
         self.post_func = (
-            CheapRandomFunction(self.context, self.n_features, self.n_features)
+            CheapRandomFunction(self.context, self.n_features, self.n_features, physics_allowed=self.physics_allowed)
             if self.mode == "neighbor_func"
             else None
         )

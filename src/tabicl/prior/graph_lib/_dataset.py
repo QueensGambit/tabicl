@@ -7,13 +7,14 @@ from tabicl.prior.graph_lib._graph import RandomDAG
 from tabicl.prior.graph_lib._graph_function import RandomGraphFunction
 
 
-def check_x_y_ancestors_overlap(graph: List[List[int]], node_feature_specs: List[Dict[str, FeatureSpec]]) -> bool:
+def compute_ancestor_masks(graph: List[List[int]], node_feature_specs: List[Dict[str, FeatureSpec]]) -> Dict[str, np.ndarray]:
     """
-    There can only be a functional relation between x and y if one of their ancestors overlap.
+    For each of the 'x' and 'y' groups, computes a boolean mask over nodes indicating whether that node
+    is itself a feature node of that group, or an ancestor of one.
 
     :param graph: Graph (list of parent node idxs for each node)
     :param node_feature_specs: feature specs with feature names for each node
-    :return: False if x and y are completely independent according to the graph, otherwise True.
+    :return: dict with keys 'x' and 'y', each a boolean array of length len(graph)
     """
     ancestors_arrs = {key: np.zeros(len(graph), dtype=np.bool_) for key in ['x', 'y']}
     for node_idx in reversed(range(len(graph))):
@@ -25,8 +26,19 @@ def check_x_y_ancestors_overlap(graph: List[List[int]], node_feature_specs: List
             if ancestors_arrs[group][node_idx]:
                 for parent_idx in graph[node_idx]:
                     ancestors_arrs[group][parent_idx] = True
+    return ancestors_arrs
 
-    return np.any(np.logical_and(ancestors_arrs['x'], ancestors_arrs['y']))
+
+def check_x_y_ancestors_overlap(graph: List[List[int]], node_feature_specs: List[Dict[str, FeatureSpec]]) -> bool:
+    """
+    There can only be a functional relation between x and y if one of their ancestors overlap.
+
+    :param graph: Graph (list of parent node idxs for each node)
+    :param node_feature_specs: feature specs with feature names for each node
+    :return: False if x and y are completely independent according to the graph, otherwise True.
+    """
+    ancestors_arrs = compute_ancestor_masks(graph, node_feature_specs)
+    return bool(np.any(np.logical_and(ancestors_arrs['x'], ancestors_arrs['y'])))
 
 
 class RandomDataset(PriorComponent):
@@ -53,10 +65,37 @@ class RandomDataset(PriorComponent):
                 for idx, (feature_name, feature_spec) in enumerate(feature_specs.items()):
                     node_feature_specs[feature_node_idxs[idx]][feature_name] = feature_spec
 
-            if (not self.config.filter_unpredictable_graphs) or check_x_y_ancestors_overlap(graph, node_feature_specs):
+            ancestor_masks = compute_ancestor_masks(graph, node_feature_specs)
+            if (not self.config.filter_unpredictable_graphs) or np.any(
+                np.logical_and(ancestor_masks['x'], ancestor_masks['y'])
+            ):
                 break  # break if predictable, otherwise try again because y and x are independent in the graph
 
-        graph_func = RandomGraphFunction(self.context, dag=graph, node_feature_specs=node_feature_specs)
+        # ----- Bias physics-capable nodes towards the causal path to y -----
+        # Without this, a physics-informed node only ends up influencing y by chance (it might be an
+        # x-only branch that check_x_y_ancestors_overlap doesn't distinguish from the y-ancestor path).
+        # With probability physics_ancestor_boost_prob, pick ONE node that (a) is an ancestor of y and
+        # (b) does not itself produce a y feature (those are always physics-free regardless, see
+        # RandomNodeFunction), and force it to use a physics-informed function. Deliberately forcing only
+        # a single node (not all eligible ones) avoids over-diluting the prior's function-type diversity
+        # on the y-relevant path.
+        is_y_node = [
+            any(feature_spec.group == 'y' for feature_spec in node_feature_specs[idx].values())
+            for idx in range(n_nodes)
+        ]
+        physics_candidate_nodes = [
+            idx for idx in range(n_nodes) if ancestor_masks['y'][idx] and not is_y_node[idx]
+        ]
+        force_physics_nodes = [False] * n_nodes
+        # Defaults to 0.0 (today's unbiased behavior) unless set via --physics_ancestor_boost_prob.
+        boost_prob = self.config.physics_ancestor_boost_prob
+        if len(physics_candidate_nodes) > 0 and boost_prob > 0.0 and np.random.rand() < boost_prob:
+            forced_idx = int(np.random.choice(physics_candidate_nodes))
+            force_physics_nodes[forced_idx] = True
+
+        graph_func = RandomGraphFunction(
+            self.context, dag=graph, node_feature_specs=node_feature_specs, force_physics_nodes=force_physics_nodes,
+        )
 
         # ----- Evaluate computation graph -----
         n_samples = data_prop.n_train + data_prop.n_test

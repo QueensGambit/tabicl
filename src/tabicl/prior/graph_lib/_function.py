@@ -222,8 +222,9 @@ class RandomDiscretizationFunction(RandomFunction):
     """
     Discretizes to the closest point from a subset of points, then applies a linear function.
     """
-    def __init__(self, context: Context, in_features: int, out_features: int, n_centers: Optional[int] = None):
-        super().__init__(context, in_features, out_features)
+    def __init__(self, context: Context, in_features: int, out_features: int, n_centers: Optional[int] = None,
+                 physics_allowed: bool = True, force_physics: bool = False):
+        super().__init__(context, in_features, out_features, physics_allowed=physics_allowed, force_physics=force_physics)
         self.n_centers = n_centers
 
     def _fit(self, x: torch.Tensor):
@@ -254,8 +255,9 @@ class RandomDiscretizationFunction(RandomFunction):
 
 class RandomGPFunction(RandomFunction):
     # Gaussian process function with extra linear transform and random kernel
-    def __init__(self, context: Context, in_features: int, out_features: int, n_frequencies: int = 256):
-        super().__init__(context, in_features, out_features)
+    def __init__(self, context: Context, in_features: int, out_features: int, n_frequencies: int = 256,
+                 physics_allowed: bool = True, force_physics: bool = False):
+        super().__init__(context, in_features, out_features, physics_allowed=physics_allowed, force_physics=force_physics)
         self.n_frequencies = n_frequencies
 
     def _fit(self, x: torch.Tensor):

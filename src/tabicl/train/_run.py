@@ -22,6 +22,9 @@ from torch.distributed import init_process_group, destroy_process_group
 from tqdm import tqdm
 import wandb
 
+import sys, os
+sys.path.append(os.getcwd())
+
 from tabicl._model.tabicl import TabICL
 from tabicl._model.attention import HAS_FLASH_ATTN3, set_flash_attn3_enabled
 from tabicl.prior._dataset import PriorDataset

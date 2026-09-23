@@ -40,7 +40,7 @@ python tabicl/train/_run.py \
             --torch_seed 43 \
             --max_steps 50000 \
             --batch_size 64 \
-            --micro_batch_size 4 \
+            --micro_batch_size 1 \
             --lr 8e-4 \
             --muon True \
             --beta1 0.9 \

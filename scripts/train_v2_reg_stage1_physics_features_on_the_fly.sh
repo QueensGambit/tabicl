@@ -36,8 +36,8 @@ python tabicl/train/_run.py \
             --wandb_name tabiclv2_reg_physics_features_stage1 \
             --device cuda \
             --dtype float32 \
-            --np_seed 43 \
-            --torch_seed 43 \
+            --np_seed 44 \
+            --torch_seed 44 \
             --max_steps 50000 \
             --batch_size 64 \
             --micro_batch_size 1 \
@@ -96,7 +96,7 @@ python tabicl/train/_run.py \
             --zero_init False \
             --use_flash_attn3 False \
             --norm_type layernorm_nobias \
-            --checkpoint_dir ~/Programming/forks/tabicl/checkpoints/physics_features_regression/stage_1 \
+            --checkpoint_dir ~/Programming/forks/tabicl/checkpoints/physics_features_regression/stage_1/seed_44 \
             --save_temp_every 500 \
             --save_perm_every 5000
 
